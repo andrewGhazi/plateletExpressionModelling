@@ -22,6 +22,9 @@ library(biomaRt); select = dplyr::select; contains = dplyr::contains
 
 setwd("~/plateletExpressionModelling")
 
+#### predixcan dbs
+#system('wget https://s3.amazonaws.com/predictdb/GTEx-V6p-HapMap-2016-09-08.tar.gz data/')
+
 ##### SNP annotation file - A tab delimited file, with a header row, containing the fields: chromosome, position, VariantID, RefAllele, AlternativeAllele, original RSID number, more recent RSID number, Num_alt_per_site.
 # At a minimum, there must be a header row, with chromosome in the first column, position in the second, VariantID in the third (form: chr_pos_refAllele_altAllele_build), ref Allele in the fourth, alt Allele in the fifth, and rsid in the seventh.
 snpAnnotations = read_tsv('/mnt/labhome/simonlm/projects/PRAX/Papers/eQTLpaper/MatrixEQTL/data/snploc.txt')
@@ -29,9 +32,9 @@ snpAnnotations = read_tsv('/mnt/labhome/simonlm/projects/PRAX/Papers/eQTLpaper/M
 #Let's convert the kgp snps to rs identifiers using this method http://rstudio-pubs-static.s3.amazonaws.com/9686_5d78b74c4b9743cfb5ac63aba8d309b5.html
 #kgpAnnotations %>% mutate(pos1 = pos + 1) %>% select(chr, pos, pos1, snp) %>% write_tsv('inputs/kgpToRsUCSCTableInput.txt', col_names = FALSE)
 setwd('data/')
-#system('wget http://support.illumina.com/content/dam/illumina-support/documents/downloads/productfiles/humanomni5-4/v1-2/infinium-omni5-4-v1-2-a1-b144-rsids.zip',
-#       ignore.stdout = TRUE)
-#system('unzip infinium-omni5-4-v1-2-a1-b144-rsids.zip')
+# system('wget http://support.illumina.com/content/dam/illumina-support/documents/downloads/productfiles/humanomni5-4/v1-2/infinium-omni5-4-v1-2-a1-b144-rsids.zip',
+#        ignore.stdout = TRUE)
+# system('unzip infinium-omni5-4-v1-2-a1-b144-rsids.zip')
 kgpToRs = read_delim('InfiniumOmni5-4v1-2_A1_b144_rsids.txt',
                      col_names = TRUE,
                      delim = '\t')
@@ -126,8 +129,8 @@ genotypes = fread('/mnt/labhome/simonlm/projects/PRAX/Papers/eQTLpaper/MatrixEQT
   na.omit %>% 
   mutate_each(funs(reverseDosage), vars = contains('X')) %>% 
   mutate(MAF = .1) %>% # Just faking this for now
-  select(CHROM, RsID, POS, REF, ALT, MAF, contains('X')) %>% 
-  filter(RsID %in% gtexSnps)
+  select(CHROM, RsID, POS, REF, ALT, MAF, contains('X')) #%>% 
+  #filter(RsID %in% gtexSnps)
 
 setwd('~/plateletExpressionModelling/data/genotypeByChr/')
 totSize = 0
@@ -157,7 +160,7 @@ names(exprData) = c('hgnc_symbol', system('head -1 /mnt/labhome/simonlm/projects
 #get the ensembl ids necessary
 symbToID = getBM(c('ensembl_gene_id', 'hgnc_symbol'), 
                  filters = 'hgnc_symbol', 
-                 values = exprData$geneName, 
+                 values = exprData$hgnc_symbol, 
                  useMart('ensembl', dataset = 'hsapiens_gene_ensembl')) %>% 
   as.tbl
 
