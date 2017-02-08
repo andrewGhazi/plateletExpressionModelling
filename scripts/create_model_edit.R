@@ -2,7 +2,7 @@
 #Also they wrote %&% as their own version of paste0 in the file the source, lol
 
 argv <- commandArgs(trailingOnly = TRUE)
-source("GTEx_Tissue_Wide_CV_elasticNet_edit.R")
+source("~/plateletExpressionModelling/scripts/GTEx_Tissue_Wide_CV_elasticNet_edit.R")
 
 tis <- argv[1]
 chrom <- as.numeric(argv[9])
@@ -10,7 +10,7 @@ alpha <- as.numeric(argv[7])
 window <- as.numeric(argv[11])
 
 
-data_dir <- "../data/intermediate/"
+data_dir <- "~/plateletExpressionModelling/prediXcanModeller/data/intermediate/"
 
 #expression_RDS <- data_dir %&% "expression_phenotypes/" %&% tis %&% "_Analysis.expr.RDS"
 expression_RDS <- argv[2]
