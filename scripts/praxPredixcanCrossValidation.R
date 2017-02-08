@@ -52,8 +52,7 @@ mclapply(2:nfold, function(foldnum){
   #### Create genotype and expression files consisting of just the data of the training set
   genotype %>% 
     select_(.dots = c('VariantID', folds[-foldnum] %>% unlist %>% as.vector)) %>% #as.vector removes the names
-    #mutate_each(funs(reverseDosage), vars = -VariantID) %>% #We reverse the dosage because PrediXcan is expecting dosage of the minor allele # Took this out as I fixed it in compileInputs.R
-    write_tsv(path = paste0('intermediates/', foldnum, '/trainGenotypeFold', foldnum, '.tsv'));
+    write_tsv(path = paste0('intermediates/', foldnum, '/trainGenotypeFold', foldnum, '.tsv')) #mutate_each(funs(reverseDosage), vars = -VariantID) %>% #We reverse the dosage because PrediXcan is expecting dosage of the minor allele # Took this out as I fixed it in compileInputs.R
   
   rm(genotype)
   gc()
@@ -134,7 +133,8 @@ mclapply(2:nfold, function(foldnum){
     snpset = 'PRAXOmni5M '
     window = '1000000 '
     
-    system(paste0('Rscript create_model_edit.R ', 
+    system(paste0('Rscript ',
+                  '~/plateletExpressionModelling/scripts/create_model_edit.R ', 
                   study,
                   exprRDS,
                   geno,
@@ -241,16 +241,57 @@ mclapply(2:nfold, function(foldnum){
   
 }, mc.cores = 3)
 
+
+
+##### Performance on the test set looked disappointing. Let's see how it performs on the training sets.
+
+customFun  = function(DF) { #Thanks http://stackoverflow.com/questions/41233173/how-can-i-write-dplyr-groups-to-separate-files
+  write_tsv(DF %>% select(-CHROM), paste0("~/plateletExpressionModelling/data/genotypeByChr/praxGenotype.chr", unique(DF$CHROM), ".tsv"))
+  return(DF)
+}
+
+kgpToRs = read_delim('~/plateletExpressionModelling/data/InfiniumOmni5-4v1-2_A1_b144_rsids.txt',
+                     col_names = TRUE,
+                     delim = '\t')
+names(kgpToRs)[1] = 'id'
+
+snpAnnotations = read_tsv('~/plateletExpressionModelling/data/snpAnnotationFile.txt')
+
+genotypes = fread('/mnt/labhome/simonlm/projects/PRAX/Papers/eQTLpaper/MatrixEQTL/data/genotype.txt',
+                  header = TRUE) %>% 
+  as.tbl %>% 
+  left_join(kgpToRs, by = 'id', copy = TRUE) %>% #I don't exactly know what the copy = TRUE argument does but it throws and error otherwise
+  left_join(snpAnnotations, by = 'RsID', copy = TRUE) %>% 
+  na.omit %>% 
+  mutate_each(funs(reverseDosage), vars = contains('X')) %>% 
+  mutate(MAF = .1) %>% # Just faking this for now
+  select(CHROM, RsID, POS, REF, ALT, MAF, contains('X')) 
+
+for (foldnum in 1:7) {
+  outDirPath = paste0('~/plateletExpressionModelling/outputs/crossValidatedExpressionAndPhenotypes/exprPredictionsFull/', foldnum, '/ ')
+  dosageDir = paste0('~/plateletExpressionModelling/data/genotypeByChr/ ') #Needs to point to a directory containing genotype files
+  
+  setwd('/usr/local/src/PrediXcan-master/Software/')
+  system(paste0('python ',
+                '/usr/local/src/PrediXcan-master/Software/PrediXcan.py --predict ',
+                '--output_dir ', outDirPath,
+                '--dosages ', dosageDir,
+                '--dosages_prefix praxGenotype.chr ',
+                '--weights ', '~/plateletExpressionModelling/outputs/crossValidatedExpressionAndPhenotypes/dbs/praxFilteredFold', foldnum, '.db ',
+                '--samples ', '~/plateletExpressionModelling/data/genotypeByChr/samples.txt'))
+}
+
 exprData = read_tsv('data/expressionFile.tsv')
 for (i in 1:7) {
   #read in the predicted expression for this fold
-  predExpr = read_tsv(paste0('outputs/crossValidatedExpressionAndPhenotypes/exprPredictions/', i, '/predicted_expression.txt')) %>% 
+  predExpr = read_tsv(paste0('~/plateletExpressionModelling/outputs/crossValidatedExpressionAndPhenotypes/exprPredictionsFull/', i, '/predicted_expression.txt')) %>% 
     select(-FID) %>% 
+    filter(IID %in% (folds[-i] %>% unlist %>% as.vector)) %>% 
     mutate(type = 'PrediXcan')
   
   rawExpr = exprData %>% 
     filter(ensembl_id %in% names(predExpr)) %>% 
-    select_(.dots = c('ensembl_id', folds[i] %>% unlist %>% as.vector))
+    select_(.dots = c('ensembl_id', folds[-i] %>% unlist %>% as.vector))
   
   genes = rawExpr$ensembl_id
   
@@ -279,5 +320,12 @@ for (i in 1:7) {
     totDat %<>% rbind(foldDat)
   }
 }
+#totDat %>% ggplot(aes(PrediXcan, PRAX)) + geom_point()
+
+foldDat %>% 
+  split(.$gene) %>% 
+  map(~ lm(PRAX ~ PrediXcan, data = .)) %>% 
+  map(summary) %>% 
+  map_dbl('r.squared')
 
 
