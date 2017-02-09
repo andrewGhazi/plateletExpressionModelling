@@ -12,6 +12,7 @@ library(ggplot2)
 library(readr)
 library(tidyr)
 library(data.table)
+library(purrr)
 library(parallel); select = dplyr::select; select_ = dplyr::select_; contains = dplyr::contains
 
 #### Main script
@@ -245,28 +246,6 @@ mclapply(2:nfold, function(foldnum){
 
 ##### Performance on the test set looked disappointing. Let's see how it performs on the training sets.
 
-customFun  = function(DF) { #Thanks http://stackoverflow.com/questions/41233173/how-can-i-write-dplyr-groups-to-separate-files
-  write_tsv(DF %>% select(-CHROM), paste0("~/plateletExpressionModelling/data/genotypeByChr/praxGenotype.chr", unique(DF$CHROM), ".tsv"))
-  return(DF)
-}
-
-kgpToRs = read_delim('~/plateletExpressionModelling/data/InfiniumOmni5-4v1-2_A1_b144_rsids.txt',
-                     col_names = TRUE,
-                     delim = '\t')
-names(kgpToRs)[1] = 'id'
-
-snpAnnotations = read_tsv('~/plateletExpressionModelling/data/snpAnnotationFile.txt')
-
-genotypes = fread('/mnt/labhome/simonlm/projects/PRAX/Papers/eQTLpaper/MatrixEQTL/data/genotype.txt',
-                  header = TRUE) %>% 
-  as.tbl %>% 
-  left_join(kgpToRs, by = 'id', copy = TRUE) %>% #I don't exactly know what the copy = TRUE argument does but it throws and error otherwise
-  left_join(snpAnnotations, by = 'RsID', copy = TRUE) %>% 
-  na.omit %>% 
-  mutate_each(funs(reverseDosage), vars = contains('X')) %>% 
-  mutate(MAF = .1) %>% # Just faking this for now
-  select(CHROM, RsID, POS, REF, ALT, MAF, contains('X')) 
-
 for (foldnum in 1:7) {
   outDirPath = paste0('~/plateletExpressionModelling/outputs/crossValidatedExpressionAndPhenotypes/exprPredictionsFull/', foldnum, '/ ')
   dosageDir = paste0('~/plateletExpressionModelling/data/genotypeByChr/ ') #Needs to point to a directory containing genotype files
@@ -275,7 +254,7 @@ for (foldnum in 1:7) {
   system(paste0('python ',
                 '/usr/local/src/PrediXcan-master/Software/PrediXcan.py --predict ',
                 '--output_dir ', outDirPath,
-                '--dosages ', dosageDir,
+                '--dosages ', dosageDir, #Let's just predict on everything
                 '--dosages_prefix praxGenotype.chr ',
                 '--weights ', '~/plateletExpressionModelling/outputs/crossValidatedExpressionAndPhenotypes/dbs/praxFilteredFold', foldnum, '.db ',
                 '--samples ', '~/plateletExpressionModelling/data/genotypeByChr/samples.txt'))
@@ -286,12 +265,12 @@ for (i in 1:7) {
   #read in the predicted expression for this fold
   predExpr = read_tsv(paste0('~/plateletExpressionModelling/outputs/crossValidatedExpressionAndPhenotypes/exprPredictionsFull/', i, '/predicted_expression.txt')) %>% 
     select(-FID) %>% 
-    filter(IID %in% (folds[-i] %>% unlist %>% as.vector)) %>% 
+    #filter(IID %in% (folds[-i] %>% unlist %>% as.vector)) %>% 
     mutate(type = 'PrediXcan')
   
   rawExpr = exprData %>% 
-    filter(ensembl_id %in% names(predExpr)) %>% 
-    select_(.dots = c('ensembl_id', folds[-i] %>% unlist %>% as.vector))
+    filter(ensembl_id %in% names(predExpr)) # %>% 
+    #select_(.dots = c('ensembl_id', folds[-i] %>% unlist %>% as.vector))
   
   genes = rawExpr$ensembl_id
   
@@ -305,27 +284,91 @@ for (i in 1:7) {
   
   realExpr$IID = names(rawExpr)[-1]
   
-  realExpr %<>% mutate(type = 'PRAX') %>% select(IID, type, contains('ENSG'))
+  realExpr %<>% mutate(type = 'PRAX') %>% 
+    select(IID, type, contains('ENSG'))
   
   foldDat = rbind(predExpr, realExpr) %>% 
     select(IID, type, contains('ENSG')) %>% 
     gather(gene, expression, -IID, -type) %>% 
-    spread(type, expression)
+    spread(type, expression) %>% 
+    mutate(testSet = IID %in% (folds[i] %>% unlist %>% as.vector),
+           fold = i)
   
-  foldDat %>% ggplot(aes(PrediXcan, PRAX)) + geom_point()
+  summarizeGene = function(dat){
+    return(data_frame(testModel = list(lm(PRAX[testSet] ~ PrediXcan[testSet], data = dat)),
+                      testR2 = testModel[[1]] %>% summary %>% .$r.squared,
+                      testPvalue = ifelse(length(unique(dat$PrediXcan[dat$testSet])) > 1,
+                                          testModel[[1]] %>% summary %>% coef %>% .['PrediXcan[testSet]', 'Pr(>|t|)'], 
+                                          1),
+                      trainModel = list(lm(PRAX[!testSet] ~ PrediXcan[!testSet], data = dat)),
+                      trainR2 = trainModel[[1]] %>% summary %>% .$r.squared,
+                      trainPvalue = ifelse(length(unique(dat$PrediXcan[!dat$testSet])) > 1,
+                                           trainModel[[1]] %>% summary %>% coef %>% .['PrediXcan[!testSet]', 'Pr(>|t|)'], 
+                                           1)))
+  }
+  
+  foldSummary = foldDat %>% 
+    group_by(gene) %>% 
+    by_slice(summarizeGene, .collate = 'rows')
   
   if (i == 1) {
     totDat = foldDat
+    totSummary = foldSummary
   } else {
     totDat %<>% rbind(foldDat)
+    totSummary %<>% rbind(foldSummary)
   }
 }
+
+totSummary %>% 
+  gather(source, R2, contains('R2')) %>% 
+  ggplot(aes(R2)) + 
+  geom_histogram(bins = 30, fill = 'grey50', color = 'black') + 
+  facet_grid(source~.) + 
+  ggtitle(expression(paste('Distribution of R' ^ '2', ' values in test and training sets'))) + 
+  xlab(expression(paste('R' ^ '2')))
+ggsave('~/plateletExpressionModelling/outputs/plots/crossValidationRsquaredDistributions.png')
+
+totDat %>% 
+  filter(gene == 'ENSG00000013583', testSet) %>% 
+  ggplot(aes(PrediXcan, PRAX)) + 
+  geom_point() + 
+  facet_wrap('fold') + 
+  geom_abline(intercept = 0, slope = -1, lty = 2, color = rgb(0,0,0,.4)) + 
+  geom_hline(yintercept = 0, lty = 2, color = rgb(0,0,0,.4)) + 
+  ggtitle('Test set PrediXcan predictions vs PRAX observations in\n7-fold cross-validation for ENSG00000013583')
+ggsave('~/plateletExpressionModelling/outputs/plots/exampleCVresults.png')
+
+totSummary %>% 
+  ggplot(aes(trainR2, testR2)) + 
+  geom_point(color = rgb(0,0,0,.2), size = 1.5, stroke = 0) + 
+  geom_smooth(method = 'loess') +
+  xlab(expression(paste('training set R' ^ '2'))) + 
+  ylab(expression(paste('test set R' ^ '2')))
+ggsave('~/plateletExpressionModelling/outputs/plots/trainTestR2relationship.png')
+
+totSummary %>% 
+  gather(sauce, pval, contains('Pvalue')) %>% 
+  ggplot(aes(pval %>% log10)) + 
+  geom_histogram(bins = 100) + 
+  facet_grid(sauce ~ .) + 
+  xlim(-84, 0)
+ggsave('~/plateletExpressionModelling/outputs/plots/trainTestPvalueComparison.png')
+
+
 #totDat %>% ggplot(aes(PrediXcan, PRAX)) + geom_point()
 
-foldDat %>% 
-  split(.$gene) %>% 
-  map(~ lm(PRAX ~ PrediXcan, data = .)) %>% 
-  map(summary) %>% 
-  map_dbl('r.squared')
+# foldDat %>% 
+#   split(.$gene) %>% 
+#   map(~lm(PRAX ~ PrediXcan, data = .)) %>% 
+#   map(summary) %>% 
+#   map_dbl('r.squared')
 
-
+# foldDat %>% 
+#   filter(testSet) %>% 
+#   split(.$gene) %>% 
+#   map(~lm(PRAX ~ PrediXcan, data = .)) %>% 
+#   map(summary) %>% 
+#   map_dbl('r.squared') %>% 
+#   data_frame(r2 = .) %>% 
+#   ggplot(aes(r2)) + geom_histogram(bins = 30)
